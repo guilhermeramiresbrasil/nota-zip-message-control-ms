@@ -7,7 +7,7 @@ export class eventService {
     const newEvent: NewProcessingEvent = {
       id,
       eventType,
-      eventData: JSON.stringify(eventData),
+      eventData,
       status: 'pending',
       createdAt: new Date()
     };
