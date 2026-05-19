@@ -1,0 +1,23 @@
+{
+  "name": "message-control-ms",
+  "version": "1.0.0",
+  "description": "Message Control MS - Microserviço de controle de mensagens com banco de dados",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "build": "bun build src/index.ts --outdir=dist --target=node",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@types/node": "^20.0.0",
+    "axios": "^1.6.0",
+    "drizzle-orm": "^0.45.2",
+    "elysia": "^1.0.0",
+    "uuid": "^9.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/uuid": "^9.0.0",
+    "bun-types": "latest"
+  }
+}
