@@ -1,8 +1,14 @@
 import type { ConsumeMessage } from 'amqplib';
+import axios from 'axios';
 import { RabbitMQService } from './rabbitmqService';
-import { conversationRepository } from '../../infra/repositories/conversationRepository';
-import { messageRepository } from '../../infra/repositories/messageRepository';
+import { whatsappUserLinksRepository } from '../../infra/repositories/whatsappUserLinksRepository';
+import { redisCache } from './redisCache';
 import { v4 as uuidv4 } from 'uuid';
+
+const WHATSAPP_ADP_URL = process.env.WHATSAPP_API_URL || 'http://whatsapp-adp:3006';
+const AUTH_MS_URL = process.env.AUTH_MS_URL || 'http://auth-ms:3004';
+const USER_MS_URL = process.env.USER_MS_URL || 'http://user-ms:3002';
+const VERIFICATION_CODE_REGEX = /^[A-F0-9]{6}$/i;
 
 export interface IncomingWhatsAppMessage {
   type: 'incoming_message';
@@ -14,9 +20,6 @@ export interface IncomingWhatsAppMessage {
   content: string;
   metadata?: Record<string, unknown>;
   timestamp: string;
-  userId?: string;
-  conversationId?: string;
-  identityVerificationStatus?: string;
 }
 
 export interface StatusUpdateMessage {
@@ -30,18 +33,54 @@ type RabbitMQMessage = IncomingWhatsAppMessage | StatusUpdateMessage;
 
 export class RabbitMQConsumer {
   private readonly rabbitMQ: RabbitMQService;
-  private readonly conversationRepo: conversationRepository;
-  private readonly messageRepo: messageRepository;
+  private readonly whatsappUserLinksRepo: whatsappUserLinksRepository;
+  private readonly redisCache: redisCache;
+  private readonly processedMessages: Set<string> = new Set();
 
   constructor(rabbitMQ: RabbitMQService) {
     this.rabbitMQ = rabbitMQ;
-    this.conversationRepo = new conversationRepository();
-    this.messageRepo = new messageRepository();
+    this.whatsappUserLinksRepo = new whatsappUserLinksRepository();
+    this.redisCache = new redisCache();
   }
 
   async start(): Promise<void> {
     await this.rabbitMQ.consume('message.control', (msg) => this.handleMessage(msg));
-    console.log('RabbitMQ consumer started for message.control queue');
+    await this.rabbitMQ.consume('llm.results', (msg) => this.handleLlmResult(msg));
+    console.log('RabbitMQ consumer started for message.control and llm.results queues');
+  }
+
+  private async handleLlmResult(msg: ConsumeMessage): Promise<void> {
+    const content = JSON.parse(msg.content.toString());
+    if (content.type !== 'llm_result' || !content.phoneNumber || !content.response) return;
+
+    let sendTo = String(content.phoneNumber);
+    let userId = content.userId;
+
+    try {
+      const link = await this.whatsappUserLinksRepo.findByPhoneJid(sendTo);
+      if (link?.phone) {
+        sendTo = link.phone;
+        userId = link.userId;
+      }
+    } catch { }
+
+    try {
+      await axios.post(`${WHATSAPP_ADP_URL}/api/whatsapp/send`,
+        { phoneNumber: sendTo, message: content.response },
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+      console.log(`✅ Replied to ${sendTo}`);
+
+      if (userId) {
+        await this.redisCache.saveMessage(userId, {
+          direction: 'out',
+          content: content.response,
+          timestamp: new Date(),
+        });
+      }
+    } catch (error) {
+      console.error(`❌ Failed to send reply to ${sendTo}:`, error instanceof Error ? error.message : String(error));
+    }
   }
 
   private async handleMessage(msg: ConsumeMessage): Promise<void> {
@@ -59,63 +98,117 @@ export class RabbitMQConsumer {
     }
   }
 
+  private async sendWhatsApp(phoneNumber: string, message: string): Promise<void> {
+    await axios.post(`${WHATSAPP_ADP_URL}/api/whatsapp/send`,
+      { phoneNumber, message },
+      { headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
   private async handleIncomingMessage(data: IncomingWhatsAppMessage): Promise<void> {
+    const phoneJid = String(data.phoneNumber);
+    const sanitizedPhone = phoneJid.replace('@s.whatsapp.net', '').replace('@lid', '').replace('@g.us', '').replace(/\D/g, '');
+    const sanitizedPhoneWithout9 = sanitizedPhone.replace(/^55(\d)9/, '55$1');
+
+    // Deduplication key using whatsappMessageId
+    const dedupeKey = data.whatsappMessageId || `${phoneJid}:${data.timestamp}:${data.content}`;
+    if (this.processedMessages.has(dedupeKey)) {
+      console.log(`⏭️ Skipping duplicate message: ${dedupeKey}`);
+      return;
+    }
+    this.processedMessages.add(dedupeKey);
+
+    // Clean up old keys to prevent memory leak
+    if (this.processedMessages.size > 1000) {
+      const keysArray = Array.from(this.processedMessages);
+      this.processedMessages.delete(keysArray[0]);
+    }
+
     try {
-      let conversation = await this.conversationRepo.findByPhoneNumber(data.phoneNumber);
+      const textContent = data.messageType === 'text' ? data.content.trim() : '';
+      const isVerificationCode = VERIFICATION_CODE_REGEX.test(textContent);
 
-      if (!conversation) {
-        conversation = await this.conversationRepo.create({
-          id: uuidv4(),
-          phoneNumber: data.phoneNumber,
-          userId: data.userId,
-          status: 'active',
-          identityVerificationStatus: data.identityVerificationStatus || 'not_started',
-          metadata: data.metadata || null,
-          lastMessageAt: new Date(data.timestamp),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
+      if (isVerificationCode) {
+        let authResult: any = null;
+        try {
+          const res = await axios.post(`${AUTH_MS_URL}/api/auth/whatsapp/validate-by-code`,
+            { code: textContent.toUpperCase(), phoneJid },
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+          authResult = res.data;
+        } catch (e) {
+          console.error('Error calling auth-ms:', e instanceof Error ? e.message : e);
+        }
+
+        if (authResult?.success) {
+          const userId = authResult?.data?.userId;
+          let phone = null;
+          try {
+            const userRes = await axios.get(`${USER_MS_URL}/api/users/${userId}`);
+            phone = userRes.data?.data?.phone || null;
+          } catch { }
+
+          const phoneNormalized = phone ? phone.replace(/\D/g, '').replace(/^55(\d)9/, '55$1') : null;
+
+          await this.whatsappUserLinksRepo.create({
+            userId,
+            phoneJid,
+            phone,
+            phoneNormalized,
+          });
+
+          console.log(`✅ Identity verified for ${phoneJid} -> userId ${userId} -> phone ${phone}`);
+          try { await this.sendWhatsApp(phone || phoneJid, '✅ Identidade verificada! Agora pode me enviar suas notas fiscais.'); } catch { }
+        } else {
+          console.log(`❌ Invalid code attempt from ${phoneJid}: ${textContent}`);
+        }
+        return;
       }
 
-      await this.messageRepo.create({
-        id: data.messageId || uuidv4(),
-        conversationId: conversation.id,
-        whatsappMessageId: data.whatsappMessageId,
-        direction: data.direction,
-        type: data.messageType,
+      let link = await this.whatsappUserLinksRepo.findByPhoneJid(phoneJid);
+      
+      if (!link) {
+        link = await this.whatsappUserLinksRepo.findByPhoneNormalized(sanitizedPhone);
+      }
+      
+      if (!link) {
+        link = await this.whatsappUserLinksRepo.findByPhoneNormalized(sanitizedPhoneWithout9);
+      }
+
+      if (!link) {
+        if (!phoneJid.includes('@lid')) {
+          await this.sendWhatsApp(phoneJid, 'Olá! Para usar o NotaZip pelo WhatsApp, acesse o app, vá em Configurações → WhatsApp e envie o código de verificação que aparece na tela.');
+        } else {
+          console.log(`⚠️ User with @lid not verified: ${phoneJid} - cannot send instructions`);
+        }
+        return;
+      }
+
+      await this.redisCache.saveMessage(link.userId, {
+        direction: 'in',
         content: data.content,
-        status: 'pending',
-        retryCount: 0,
-        metadata: data.metadata || null,
-        createdAt: new Date(data.timestamp),
-        updatedAt: new Date(data.timestamp),
+        timestamp: new Date(data.timestamp),
       });
 
-      await this.conversationRepo.update(conversation.id, {
-        lastMessageAt: new Date(data.timestamp),
-        status: 'active',
-      });
+      const llmPayload: Record<string, unknown> = {
+        type: 'llm_request',
+        messageId: data.messageId,
+        userId: link.userId,
+        phoneNumber: phoneJid,
+        timestamp: data.timestamp,
+      };
 
-      if (data.messageType === 'image') {
-        await this.rabbitMQ.publish('ocr.events', 'process', {
-          type: 'ocr_request',
-          messageId: data.messageId,
-          conversationId: conversation.id,
-          imageData: data.content,
-          timestamp: data.timestamp,
-        });
-      } else if (data.messageType === 'text') {
-        await this.rabbitMQ.publish('llm.events', 'process', {
-          type: 'llm_request',
-          messageId: data.messageId,
-          conversationId: conversation.id,
-          text: data.content,
-          userId: data.userId || conversation.userId,
-          timestamp: data.timestamp,
-        });
+      if (data.messageType === 'text') {
+        llmPayload.text = data.content;
+      } else if (data.messageType === 'image' || data.messageType === 'audio') {
+        llmPayload.mediaBase64 = (data.metadata as any)?.mediaBase64 || data.content;
+        llmPayload.mimeType = (data.metadata as any)?.mimeType || (data.messageType === 'audio' ? 'audio/ogg' : 'image/jpeg');
+      } else {
+        llmPayload.text = `Mensagem do tipo ${data.messageType} recebida.`;
       }
 
-      console.log(`Processed incoming message from ${data.phoneNumber}`);
+      await this.rabbitMQ.publish('message.processing', 'llm.process', llmPayload);
+      console.log(`Processed incoming message from ${phoneJid} (userId: ${link.userId})`);
     } catch (error) {
       console.error('Error handling incoming message:', error);
       throw error;
@@ -123,26 +216,6 @@ export class RabbitMQConsumer {
   }
 
   private async handleStatusUpdate(data: StatusUpdateMessage): Promise<void> {
-    try {
-      const message = await this.messageRepo.findByWhatsAppId(data.whatsappMessageId);
-      if (!message) {
-        console.warn(`Message not found for WhatsApp ID: ${data.whatsappMessageId}`);
-        return;
-      }
-
-      const updateData: Record<string, unknown> = { status: data.status };
-      const timestamp = new Date(data.timestamp);
-
-      if (data.status === 'sent') updateData.sentAt = timestamp;
-      if (data.status === 'delivered') updateData.deliveredAt = timestamp;
-      if (data.status === 'read') updateData.readAt = timestamp;
-
-      await this.messageRepo.update(message.id, updateData as Parameters<typeof this.messageRepo.update>[1]);
-
-      console.log(`Status updated for message ${data.whatsappMessageId}: ${data.status}`);
-    } catch (error) {
-      console.error('Error handling status update:', error);
-      throw error;
-    }
+    console.log(`Status updated for message ${data.whatsappMessageId}: ${data.status}`);
   }
 }

@@ -2,23 +2,18 @@ import { pgSchema, text, integer, timestamp, boolean, jsonb } from 'drizzle-orm/
 
 export const messageControlSchema = pgSchema('message_control_ms');
 
-export const conversations = messageControlSchema.table('conversations', {
+export const whatsappUserLinks = messageControlSchema.table('whatsapp_user_links', {
   id: text('id').primaryKey(),
-  phoneNumber: text('phone_number').notNull(),
-  userId: text('user_id'),
-  userName: text('user_name'),
-  status: text('status').notNull().default('active'),
-  workerId: text('worker_id'),
-  identityVerificationStatus: text('identity_verification_status').notNull().default('not_started'),
-  metadata: jsonb('metadata'),
-  lastMessageAt: timestamp('last_message_at').notNull(),
+  userId: text('user_id').notNull(),
+  phoneJid: text('phone_jid').notNull(),
+  phone: text('phone'),
+  phoneNormalized: text('phone_normalized'),
   createdAt: timestamp('created_at').notNull(),
   updatedAt: timestamp('updated_at').notNull(),
 });
 
 export const messages = messageControlSchema.table('messages', {
   id: text('id').primaryKey(),
-  conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
   whatsappMessageId: text('whatsapp_message_id'),
   direction: text('direction').notNull(),
   type: text('type').notNull(),
@@ -67,8 +62,8 @@ export const webhookEvents = messageControlSchema.table('webhook_events', {
 });
 
 // Types
-export type Conversation = typeof conversations.$inferSelect;
-export type NewConversation = typeof conversations.$inferInsert;
+export type WhatsappUserLink = typeof whatsappUserLinks.$inferSelect;
+export type NewWhatsappUserLink = typeof whatsappUserLinks.$inferInsert;
 export type Message = typeof messages.$inferSelect;
 export type NewMessage = typeof messages.$inferInsert;
 export type AutoReply = typeof autoReplies.$inferSelect;

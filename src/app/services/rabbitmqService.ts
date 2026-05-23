@@ -35,6 +35,11 @@ const defaultConfig: RabbitMQConfig = {
       exchange: 'llm.events',
       routingKey: 'process',
     },
+    llmResults: {
+      name: 'llm.results',
+      exchange: 'llm.events',
+      routingKey: 'llm.result',
+    },
   },
 };
 
