@@ -3,7 +3,6 @@ import axios from 'axios';
 import { RabbitMQService } from './rabbitmqService';
 import { whatsappUserLinksRepository } from '../../infra/repositories/whatsappUserLinksRepository';
 import { redisCache } from './redisCache';
-import { v4 as uuidv4 } from 'uuid';
 
 const WHATSAPP_ADP_URL = process.env.WHATSAPP_API_URL || 'http://whatsapp-adp:3006';
 const AUTH_MS_URL = process.env.AUTH_MS_URL || 'http://auth-ms:3004';

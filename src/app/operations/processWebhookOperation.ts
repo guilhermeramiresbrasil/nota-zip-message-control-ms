@@ -1,5 +1,5 @@
 import { RabbitMQService } from '../services/rabbitmqService';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 
 export interface ProcessWebhookRequest {
   webhookData: any;
@@ -33,7 +33,7 @@ export class processWebhookOperation {
         const payload = {
           type: 'incoming_message',
           phoneNumber: from,
-          messageId: uuidv4(),
+          messageId: randomUUID(),
           whatsappMessageId: message.id,
           direction: 'incoming',
           messageType,

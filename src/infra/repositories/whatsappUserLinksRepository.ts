@@ -1,12 +1,10 @@
 import { db } from '../db';
 import { whatsappUserLinks, NewWhatsappUserLink } from '../db/schema';
 import { eq } from 'drizzle-orm';
-import { v4 as uuidv4 } from 'uuid';
 
 export class whatsappUserLinksRepository {
   async create(data: Omit<NewWhatsappUserLink, 'id' | 'createdAt' | 'updatedAt'>) {
     const [link] = await db.insert(whatsappUserLinks).values({
-      id: uuidv4(),
       ...data,
       createdAt: new Date(),
       updatedAt: new Date(),
