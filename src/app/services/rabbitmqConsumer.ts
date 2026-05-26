@@ -3,11 +3,17 @@ import axios from 'axios';
 import { RabbitMQService } from './rabbitmqService';
 import { whatsappUserLinksRepository } from '../../infra/repositories/whatsappUserLinksRepository';
 import { redisCache } from './redisCache';
-import { v4 as uuidv4 } from 'uuid';
 
 const WHATSAPP_ADP_URL = process.env.WHATSAPP_API_URL || 'http://whatsapp-adp:3006';
 const AUTH_MS_URL = process.env.AUTH_MS_URL || 'http://auth-ms:3004';
 const USER_MS_URL = process.env.USER_MS_URL || 'http://user-ms:3002';
+
+const PLAN_LIMITS: Record<string, number> = {
+  free: 12,
+  trial: 20,
+  basic: 100,
+  premium: -1,
+};
 const VERIFICATION_CODE_REGEX = /^[A-F0-9]{6}$/i;
 
 export interface IncomingWhatsAppMessage {
@@ -184,6 +190,10 @@ export class RabbitMQConsumer {
         return;
       }
 
+      // Rate limiting check
+      const limitExceeded = await this.checkRateLimit(link.userId, phoneJid);
+      if (limitExceeded) return;
+
       await this.redisCache.saveMessage(link.userId, {
         direction: 'in',
         content: data.content,
@@ -212,6 +222,42 @@ export class RabbitMQConsumer {
     } catch (error) {
       console.error('Error handling incoming message:', error);
       throw error;
+    }
+  }
+
+  private async checkRateLimit(userId: string, phoneJid: string): Promise<boolean> {
+    try {
+      let planName = 'free';
+      try {
+        const subRes = await axios.get(`${USER_MS_URL}/api/subscriptions/check-limit/${userId}`);
+        if (subRes.data?.success && subRes.data?.data?.planName) {
+          planName = subRes.data.data.planName;
+        }
+      } catch {
+        // Fall back to free plan limits if user-ms is unavailable
+      }
+
+      const limit = PLAN_LIMITS[planName] ?? PLAN_LIMITS.free;
+      if (limit === -1) return false;
+
+      const count = await this.redisCache.getMessageCount(userId);
+      if (count >= limit) {
+        const sendTo = phoneJid.includes('@lid') ? null : phoneJid;
+        if (sendTo) {
+          await this.sendWhatsApp(sendTo,
+            `⚠️ Você atingiu o limite de ${limit} mensagens diárias do plano ${planName}. ` +
+            'Faça upgrade no app para continuar usando o NotaZip.'
+          );
+        }
+        console.log(`🚫 Rate limit exceeded for userId ${userId} (plan: ${planName}, count: ${count}/${limit})`);
+        return true;
+      }
+
+      await this.redisCache.incrementMessageCount(userId);
+      return false;
+    } catch (error) {
+      console.error('Rate limit check failed, allowing message:', error instanceof Error ? error.message : error);
+      return false;
     }
   }
 
