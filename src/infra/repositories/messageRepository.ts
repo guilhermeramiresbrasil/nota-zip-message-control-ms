@@ -1,6 +1,5 @@
 import { db, messages, NewMessage } from '../db';
 import { eq, and, desc } from 'drizzle-orm';
-import { v4 as uuidv4 } from 'uuid';
 
 export class messageRepository {
   async create(data: NewMessage) {

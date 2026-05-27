@@ -1,10 +1,10 @@
-import { pgSchema, text, integer, timestamp, boolean, jsonb } from 'drizzle-orm/pg-core';
+import { pgSchema, text, integer, timestamp, boolean, jsonb, uuid } from 'drizzle-orm/pg-core';
 
 export const messageControlSchema = pgSchema('message_control_ms');
 
 export const whatsappUserLinks = messageControlSchema.table('whatsapp_user_links', {
-  id: text('id').primaryKey(),
-  userId: text('user_id').notNull(),
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull(),
   phoneJid: text('phone_jid').notNull(),
   phone: text('phone'),
   phoneNormalized: text('phone_normalized'),
@@ -13,7 +13,7 @@ export const whatsappUserLinks = messageControlSchema.table('whatsapp_user_links
 });
 
 export const messages = messageControlSchema.table('messages', {
-  id: text('id').primaryKey(),
+  id: uuid('id').defaultRandom().primaryKey(),
   whatsappMessageId: text('whatsapp_message_id'),
   direction: text('direction').notNull(),
   type: text('type').notNull(),
@@ -31,7 +31,7 @@ export const messages = messageControlSchema.table('messages', {
 });
 
 export const autoReplies = messageControlSchema.table('auto_replies', {
-  id: text('id').primaryKey(),
+  id: uuid('id').defaultRandom().primaryKey(),
   triggerPattern: text('trigger_pattern').notNull(),
   responseMessage: text('response_message').notNull(),
   isActive: boolean('is_active').notNull().default(true),
@@ -41,7 +41,7 @@ export const autoReplies = messageControlSchema.table('auto_replies', {
 });
 
 export const processingEvents = messageControlSchema.table('processing_events', {
-  id: text('id').primaryKey(),
+  id: uuid('id').defaultRandom().primaryKey(),
   eventType: text('event_type').notNull(),
   eventData: jsonb('event_data').notNull(),
   status: text('status').notNull().default('pending'),
@@ -51,7 +51,7 @@ export const processingEvents = messageControlSchema.table('processing_events', 
 });
 
 export const webhookEvents = messageControlSchema.table('webhook_events', {
-  id: text('id').primaryKey(),
+  id: uuid('id').defaultRandom().primaryKey(),
   eventId: text('event_id').unique().notNull(),
   eventType: text('event_type').notNull(),
   payload: jsonb('payload').notNull(),
