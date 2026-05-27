@@ -39,6 +39,23 @@ export class redisCache {
       .slice(-limit);
   }
 
+  async incrementMessageCount(userId: string): Promise<number> {
+    const date = new Date().toISOString().split('T')[0];
+    const key = `messages:daily:${userId}:${date}`;
+    const count = await this.client.incr(key);
+    if (count === 1) {
+      await this.client.expire(key, 86400);
+    }
+    return count;
+  }
+
+  async getMessageCount(userId: string): Promise<number> {
+    const date = new Date().toISOString().split('T')[0];
+    const key = `messages:daily:${userId}:${date}`;
+    const count = await this.client.get(key);
+    return count ? parseInt(count, 10) : 0;
+  }
+
   async clearOldMessages(userId: string): Promise<void> {
     const pattern = `messages:${userId}:*`;
     const keys = await this.client.keys(pattern);
