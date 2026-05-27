@@ -190,9 +190,9 @@ export class RabbitMQConsumer {
         return;
       }
 
-      // Rate limiting check
-      const limitExceeded = await this.checkRateLimit(link.userId, phoneJid);
-      if (limitExceeded) return;
+      // WhatsApp enabled check
+      const whatsappDisabled = await this.checkWhatsAppEnabled(link.userId, phoneJid);
+      if (whatsappDisabled) return;
 
       await this.redisCache.saveMessage(link.userId, {
         direction: 'in',
@@ -225,38 +225,25 @@ export class RabbitMQConsumer {
     }
   }
 
-  private async checkRateLimit(userId: string, phoneJid: string): Promise<boolean> {
+  private async checkWhatsAppEnabled(userId: string, phoneJid: string): Promise<boolean> {
     try {
-      let planName = 'free';
-      try {
-        const subRes = await axios.get(`${USER_MS_URL}/api/subscriptions/check-limit/${userId}`);
-        if (subRes.data?.success && subRes.data?.data?.planName) {
-          planName = subRes.data.data.planName;
+      const subRes = await axios.get(`${USER_MS_URL}/api/subscriptions/${userId}`);
+      if (subRes.data?.success && subRes.data?.data?.plan) {
+        const plan = subRes.data.data.plan;
+        if (!plan.whatsappEnabled) {
+          const sendTo = phoneJid.includes('@lid') ? null : phoneJid;
+          if (sendTo) {
+            await this.sendWhatsApp(sendTo,
+              '⚠️ Seu plano atual não inclui WhatsApp. Faça upgrade para o plano Pro para usar esta funcionalidade.'
+            );
+          }
+          console.log(`🚫 WhatsApp disabled for userId ${userId} (plan: ${plan.name})`);
+          return true;
         }
-      } catch {
-        // Fall back to free plan limits if user-ms is unavailable
       }
-
-      const limit = PLAN_LIMITS[planName] ?? PLAN_LIMITS.free;
-      if (limit === -1) return false;
-
-      const count = await this.redisCache.getMessageCount(userId);
-      if (count >= limit) {
-        const sendTo = phoneJid.includes('@lid') ? null : phoneJid;
-        if (sendTo) {
-          await this.sendWhatsApp(sendTo,
-            `⚠️ Você atingiu o limite de ${limit} mensagens diárias do plano ${planName}. ` +
-            'Faça upgrade no app para continuar usando o NotaZip.'
-          );
-        }
-        console.log(`🚫 Rate limit exceeded for userId ${userId} (plan: ${planName}, count: ${count}/${limit})`);
-        return true;
-      }
-
-      await this.redisCache.incrementMessageCount(userId);
       return false;
     } catch (error) {
-      console.error('Rate limit check failed, allowing message:', error instanceof Error ? error.message : error);
+      console.error('WhatsApp enabled check failed, allowing message:', error instanceof Error ? error.message : error);
       return false;
     }
   }
