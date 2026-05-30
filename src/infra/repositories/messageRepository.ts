@@ -48,6 +48,24 @@ export class messageRepository {
     return message;
   }
 
+  async updateActions(id: string, actions: any) {
+    const [message] = await db
+      .update(messages)
+      .set({ actions, updatedAt: new Date() })
+      .where(eq(messages.id, id))
+      .returning();
+    return message;
+  }
+
+  async updateStatusAndActions(id: string, status: string, actions?: any) {
+    const [message] = await db
+      .update(messages)
+      .set({ status, actions, updatedAt: new Date() })
+      .where(eq(messages.id, id))
+      .returning();
+    return message;
+  }
+
   async list(limit: number = 50, offset: number = 0) {
     return await db
       .select()

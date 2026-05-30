@@ -3,6 +3,7 @@ import axios from 'axios';
 import { RabbitMQService } from './rabbitmqService';
 import { whatsappUserLinksRepository } from '../../infra/repositories/whatsappUserLinksRepository';
 import { redisCache } from './redisCache';
+import { messageRepository } from '../../infra/repositories/messageRepository';
 
 const WHATSAPP_ADP_URL = process.env.WHATSAPP_API_URL || 'http://whatsapp-adp:3006';
 const AUTH_MS_URL = process.env.AUTH_MS_URL || 'http://auth-ms:3004';
@@ -41,12 +42,15 @@ export class RabbitMQConsumer {
   private readonly rabbitMQ: RabbitMQService;
   private readonly whatsappUserLinksRepo: whatsappUserLinksRepository;
   private readonly redisCache: redisCache;
+  private readonly messageRepo: messageRepository;
   private readonly processedMessages: Set<string> = new Set();
+  private readonly pendingApprovals: Map<string, { userId: string; actionData: any; phoneNumber: string; timestamp: number }> = new Map();
 
   constructor(rabbitMQ: RabbitMQService) {
     this.rabbitMQ = rabbitMQ;
     this.whatsappUserLinksRepo = new whatsappUserLinksRepository();
     this.redisCache = new redisCache();
+    this.messageRepo = new messageRepository();
   }
 
   async start(): Promise<void> {
@@ -71,11 +75,60 @@ export class RabbitMQConsumer {
     } catch { }
 
     try {
-      await axios.post(`${WHATSAPP_ADP_URL}/api/whatsapp/send`,
-        { phoneNumber: sendTo, message: content.response },
-        { headers: { 'Content-Type': 'application/json' } }
+      // Update message status to processed and save actions
+      if (content.messageId) {
+        await this.messageRepo.updateStatusAndActions(content.messageId, 'processed', content.actions);
+      }
+
+      // Check if there are create_expense actions with high confidence
+      const createExpenseAction = content.actions?.find(
+        (action: any) => action.type === 'create_expense' && action.confidence > 0.7
       );
-      console.log(`✅ Replied to ${sendTo}`);
+
+      if (createExpenseAction) {
+        // Save pending approval
+        const approvalKey = `${userId}_${content.messageId}`;
+        this.pendingApprovals.set(approvalKey, {
+          userId,
+          actionData: createExpenseAction.data,
+          phoneNumber: sendTo,
+          timestamp: Date.now()
+        });
+
+        // Send confirmation request to user
+        const actionData = createExpenseAction.data;
+        const confirmationMessage = `🤖 Detectei uma transação:\n\n` +
+          `💰 Valor: R$ ${actionData.valor}\n` +
+          `📁 Categoria: ${actionData.categoria}\n` +
+          `📝 Descrição: ${actionData.descricao}\n` +
+          `📅 Data: ${actionData.data_ocorrencia}\n\n` +
+          `Deseja confirmar? Responda "sim" ou "não".`;
+
+        await axios.post(`${WHATSAPP_ADP_URL}/api/whatsapp/send`,
+          { phoneNumber: sendTo, message: confirmationMessage },
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+        console.log(`✅ Sent approval request to ${sendTo}`);
+
+        // Set timeout for approval (5 minutes)
+        setTimeout(() => {
+          const pending = this.pendingApprovals.get(approvalKey);
+          if (pending && Date.now() - pending.timestamp > 5 * 60 * 1000) {
+            this.pendingApprovals.delete(approvalKey);
+            if (content.messageId) {
+              this.messageRepo.updateStatus(content.messageId, 'expired');
+            }
+            console.log(`⏰ Approval expired for ${approvalKey}`);
+          }
+        }, 5 * 60 * 1000);
+      } else {
+        // No action to approve, just send the LLM response
+        await axios.post(`${WHATSAPP_ADP_URL}/api/whatsapp/send`,
+          { phoneNumber: sendTo, message: content.response },
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+        console.log(`✅ Replied to ${sendTo}`);
+      }
 
       if (userId) {
         await this.redisCache.saveMessage(userId, {
@@ -131,7 +184,7 @@ export class RabbitMQConsumer {
     }
 
     try {
-      const textContent = data.messageType === 'text' ? data.content.trim() : '';
+      const textContent = data.messageType === 'text' ? data.content.trim().toLowerCase() : '';
       const isVerificationCode = VERIFICATION_CODE_REGEX.test(textContent);
 
       if (isVerificationCode) {
@@ -193,6 +246,48 @@ export class RabbitMQConsumer {
       // WhatsApp enabled check
       const whatsappDisabled = await this.checkWhatsAppEnabled(link.userId, phoneJid);
       if (whatsappDisabled) return;
+
+      // Check if this is an approval response
+      const approvalKey = `${link.userId}_${data.messageId}`;
+      const pendingApproval = this.pendingApprovals.get(approvalKey);
+
+      if (pendingApproval) {
+        const isApproved = textContent === 'sim' || textContent === 'ok' || textContent === 'confirmar' || textContent === 'yes';
+        const isRejected = textContent === 'não' || textContent === 'nao' || textContent === 'cancelar' || textContent === 'no';
+
+        if (isApproved || isRejected) {
+          this.pendingApprovals.delete(approvalKey);
+
+          if (isApproved) {
+            // Update status to approved
+            await this.messageRepo.updateStatus(data.messageId, 'approved');
+
+            // Publish event to note-guard
+            await this.rabbitMQ.publish('note_guard.events', 'transaction.approved', {
+              type: 'transaction_approved',
+              userId: pendingApproval.userId,
+              phoneNumber: pendingApproval.phoneNumber,
+              actionData: pendingApproval.actionData,
+              approvedAt: new Date().toISOString()
+            });
+
+            await this.sendWhatsApp(pendingApproval.phoneNumber, '✅ Transação confirmada com sucesso!');
+            console.log(`✅ Transaction approved and published for ${pendingApproval.userId}`);
+          } else {
+            // Update status to rejected
+            await this.messageRepo.updateStatus(data.messageId, 'rejected');
+            await this.sendWhatsApp(pendingApproval.phoneNumber, '❌ Transação cancelada.');
+            console.log(`❌ Transaction rejected for ${pendingApproval.userId}`);
+          }
+
+          await this.redisCache.saveMessage(link.userId, {
+            direction: 'in',
+            content: data.content,
+            timestamp: new Date(data.timestamp),
+          });
+          return;
+        }
+      }
 
       await this.redisCache.saveMessage(link.userId, {
         direction: 'in',

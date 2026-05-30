@@ -1,4 +1,4 @@
-import amqplib, { type Connection, type Channel, type ConsumeMessage } from 'amqplib';
+import amqplib, { type Channel, type ConsumeMessage, type ChannelModel } from 'amqplib';
 
 export interface RabbitMQConfig {
   url: string;
@@ -13,6 +13,7 @@ const defaultConfig: RabbitMQConfig = {
     messageProcessing: 'message.processing',
     ocrEvents: 'ocr.events',
     llmEvents: 'llm.events',
+    noteGuardEvents: 'note_guard.events',
   },
   queues: {
     whatsappIncoming: {
@@ -40,11 +41,16 @@ const defaultConfig: RabbitMQConfig = {
       exchange: 'llm.events',
       routingKey: 'llm.result',
     },
+    transactionApproved: {
+      name: 'transaction.approved',
+      exchange: 'note_guard.events',
+      routingKey: 'transaction.approved',
+    },
   },
 };
 
 export class RabbitMQService {
-  private connection: Connection | null = null;
+  private connection: ChannelModel | null = null;
   private channel: Channel | null = null;
   private config: RabbitMQConfig;
 

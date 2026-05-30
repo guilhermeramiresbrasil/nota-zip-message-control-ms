@@ -9,6 +9,16 @@ let rabbitMQService: RabbitMQService | null = null;
 async function startServer() {
   await initializeDatabase();
 
+  const app = new Elysia()
+    .use(messageRoutes())
+    .listen(3007);
+
+  console.log('Message Control MS running on 0.0.0.0:3007');
+  console.log('Webhook endpoint: http://0.0.0.0:3007/api/messages/webhook');
+  console.log('Health check: http://0.0.0.0:3007/api/messages/health');
+  console.log('Database: PostgreSQL (message_control_ms schema)');
+
+  // Initialize RabbitMQ after server starts (non-blocking)
   rabbitMQService = new RabbitMQService();
   try {
     await rabbitMQService.connect();
@@ -17,15 +27,6 @@ async function startServer() {
   } catch (error) {
     console.warn('RabbitMQ not available, running without message queue:', error);
   }
-
-  const app = new Elysia()
-    .use(messageRoutes)
-    .listen(3007);
-
-  console.log('Message Control MS running on 0.0.0.0:3007');
-  console.log('Webhook endpoint: http://0.0.0.0:3007/api/messages/webhook');
-  console.log('Health check: http://0.0.0.0:3007/api/messages/health');
-  console.log('Database: PostgreSQL (message_control_ms schema)');
 }
 
 process.on('SIGTERM', async () => {

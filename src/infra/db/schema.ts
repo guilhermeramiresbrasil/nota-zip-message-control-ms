@@ -15,6 +15,7 @@ export const whatsappUserLinks = messageControlSchema.table('whatsapp_user_links
 export const messages = messageControlSchema.table('messages', {
   id: uuid('id').defaultRandom().primaryKey(),
   whatsappMessageId: text('whatsapp_message_id'),
+  conversationId: text('conversation_id'),
   direction: text('direction').notNull(),
   type: text('type').notNull(),
   content: text('content').notNull(),
@@ -26,16 +27,7 @@ export const messages = messageControlSchema.table('messages', {
   lastRetryAt: timestamp('last_retry_at'),
   error: text('error'),
   metadata: jsonb('metadata'),
-  createdAt: timestamp('created_at').notNull(),
-  updatedAt: timestamp('updated_at').notNull(),
-});
-
-export const autoReplies = messageControlSchema.table('auto_replies', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  triggerPattern: text('trigger_pattern').notNull(),
-  responseMessage: text('response_message').notNull(),
-  isActive: boolean('is_active').notNull().default(true),
-  priority: integer('priority').notNull().default(0),
+  actions: jsonb('actions'),
   createdAt: timestamp('created_at').notNull(),
   updatedAt: timestamp('updated_at').notNull(),
 });
@@ -50,25 +42,10 @@ export const processingEvents = messageControlSchema.table('processing_events', 
   processedAt: timestamp('processed_at'),
 });
 
-export const webhookEvents = messageControlSchema.table('webhook_events', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  eventId: text('event_id').unique().notNull(),
-  eventType: text('event_type').notNull(),
-  payload: jsonb('payload').notNull(),
-  processed: boolean('processed').notNull().default(false),
-  processedAt: timestamp('processed_at'),
-  error: text('error'),
-  createdAt: timestamp('created_at').notNull(),
-});
-
 // Types
 export type WhatsappUserLink = typeof whatsappUserLinks.$inferSelect;
 export type NewWhatsappUserLink = typeof whatsappUserLinks.$inferInsert;
 export type Message = typeof messages.$inferSelect;
 export type NewMessage = typeof messages.$inferInsert;
-export type AutoReply = typeof autoReplies.$inferSelect;
-export type NewAutoReply = typeof autoReplies.$inferInsert;
 export type ProcessingEvent = typeof processingEvents.$inferSelect;
 export type NewProcessingEvent = typeof processingEvents.$inferInsert;
-export type WebhookEvent = typeof webhookEvents.$inferSelect;
-export type NewWebhookEvent = typeof webhookEvents.$inferInsert;

@@ -12,6 +12,7 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
+    "@sinclair/typebox": "^0.34.49",
     "@types/node": "^20.0.0",
     "amqplib": "^2.0.1",
     "axios": "^1.6.0",

@@ -18,9 +18,8 @@ export function messageRoutes(): any {
     .post('/ocr-result', ({ body, set }) => {
       return controller.receiveOCRResult({ body, set });
     })
-    // Endpoint para envio manual de mensagens (testes)
-    .post('/send', ({ body, set }) => {
-      const validated = whatsappWebhookSchema.parse(body);
-      return controller.sendMessage({ body: validated, set });
+    // Endpoint para criar link de usuário (teste)
+    .post('/link', ({ body, set }) => {
+      return controller.createUserLink({ body, set });
     });
 }
