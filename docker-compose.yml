@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  message-control-ms:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: debr-message-control-ms
+    environment:
+      - NODE_ENV=production
+      - MESSAGE_CONTROL_PORT=3007
+      - MESSAGE_CONTROL_HOST=0.0.0.0
+      - DATABASE_URL=postgresql://nota_zip:${POSTGRES_PASSWORD}@postgres:5432/nota_zip
+      - RABBITMQ_URL=amqp://nota_zip:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/nota_zip
+      - WHATSAPP_API_URL=http://whatsapp-adp:3006
+      - AUTH_MS_URL=http://auth-ms:3004
+      - USER_MS_URL=http://user-ms:3002
+    networks:
+      - debr-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3007/api/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+networks:
+  debr-network:
+    external: true
