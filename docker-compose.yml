@@ -21,7 +21,7 @@ services:
       - debr-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3007/api/health | grep -q ok"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3007/api/messages/health | grep -q ok"]
       interval: 30s
       timeout: 3s
       retries: 3
