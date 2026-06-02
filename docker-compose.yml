@@ -6,15 +6,17 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: debr-message-control-ms
+    env_file:
+      - .env
     environment:
       - NODE_ENV=production
       - MESSAGE_CONTROL_PORT=3007
       - MESSAGE_CONTROL_HOST=0.0.0.0
-      - DATABASE_URL=postgresql://nota_zip:${POSTGRES_PASSWORD}@postgres:5432/nota_zip
-      - RABBITMQ_URL=amqp://nota_zip:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/nota_zip
-      - WHATSAPP_API_URL=http://whatsapp-adp:3006
-      - AUTH_MS_URL=http://auth-ms:3004
-      - USER_MS_URL=http://user-ms:3002
+      - DATABASE_URL=postgresql://nota_zip:${POSTGRES_PASSWORD}@debr-postgres:5432/nota_zip
+      - RABBITMQ_URL=amqp://nota_zip:${RABBITMQ_DEFAULT_PASS}@debr-rabbitmq:5672/nota_zip
+      - WHATSAPP_API_URL=http://debr-whatsapp-adp:3006
+      - AUTH_MS_URL=http://debr-auth-ms:3004
+      - USER_MS_URL=http://debr-user-ms:3002
     networks:
       - debr-network
     restart: unless-stopped
