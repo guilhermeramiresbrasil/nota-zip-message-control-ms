@@ -277,10 +277,19 @@ export class RabbitMQConsumer {
       if (whatsappDisabled) return;
 
       // Check if this is an approval response
-      const approvalKey = `${link.userId}_${data.messageId}`;
-      const pendingApproval = this.pendingApprovals.get(approvalKey);
+      // Find the most recent pending approval for this user
+      let pendingApproval = null;
+      let approvalKey = null;
+      
+      for (const [key, value] of this.pendingApprovals.entries()) {
+        if (value.userId === link.userId) {
+          pendingApproval = value;
+          approvalKey = key;
+          break;
+        }
+      }
 
-      console.log(`🔍 Checking approval for key: ${approvalKey}`);
+      console.log(`🔍 Checking approval for userId: ${link.userId}`);
       console.log(`🔍 Pending approval found: ${!!pendingApproval}`);
       console.log(`🔍 Text content: "${textContent}"`);
 
