@@ -63,16 +63,29 @@ export class RabbitMQConsumer {
     const content = JSON.parse(msg.content.toString());
     if (content.type !== 'llm_result' || !content.phoneNumber || !content.response) return;
 
+    console.log('🤖 handleLlmResult - content:', {
+      type: content.type,
+      phoneNumber: content.phoneNumber,
+      userId: content.userId,
+      messageId: content.messageId
+    });
+
     let sendTo = String(content.phoneNumber);
     let userId = content.userId;
 
     try {
       const link = await this.whatsappUserLinksRepo.findByPhoneJid(sendTo);
-      if (link?.phone) {
-        sendTo = link.phone;
+      console.log('🔗 Found link:', link);
+      if (link) {
+        if (link.phone) {
+          sendTo = link.phone;
+        }
         userId = link.userId;
+        console.log('🔗 Updated userId from link:', userId);
       }
-    } catch { }
+    } catch (error) {
+      console.error('❌ Error finding user link:', error);
+    }
 
     try {
       // Update message status to processed and save actions
@@ -83,6 +96,11 @@ export class RabbitMQConsumer {
       // Check if there are create_expense actions with high confidence
       const createExpenseAction = content.actions?.find(
         (action: any) => action.type === 'create_expense' && action.confidence > 0.7
+      );
+
+      // Check if there are get_report actions with high confidence
+      const getReportAction = content.actions?.find(
+        (action: any) => action.type === 'get_report' && action.confidence > 0.7
       );
 
       if (createExpenseAction) {
@@ -121,6 +139,17 @@ export class RabbitMQConsumer {
             console.log(`⏰ Approval expired for ${approvalKey}`);
           }
         }, 5 * 60 * 1000);
+      } else if (getReportAction) {
+        // Handle get_report action - fetch transactions from note-guard-ms
+        if (!userId) {
+          console.error('❌ Cannot handle get_report: userId is undefined');
+          await axios.post(`${WHATSAPP_ADP_URL}/api/whatsapp/send`,
+            { phoneNumber: sendTo, message: '❌ Erro: usuário não identificado. Por favor, verifique sua conexão.' },
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+          return;
+        }
+        await this.handleGetReportAction(userId, sendTo, getReportAction.data);
       } else {
         // No action to approve, just send the LLM response
         await axios.post(`${WHATSAPP_ADP_URL}/api/whatsapp/send`,
@@ -345,5 +374,116 @@ export class RabbitMQConsumer {
 
   private async handleStatusUpdate(data: StatusUpdateMessage): Promise<void> {
     console.log(`Status updated for message ${data.whatsappMessageId}: ${data.status}`);
+  }
+
+  private async handleGetReportAction(userId: string, phoneNumber: string, actionData: any): Promise<void> {
+    try {
+      const NOTE_GUARD_MS_URL = process.env.NOTE_GUARD_MS_URL || 'http://debr-note-guard-ms:3011';
+
+      console.log(`📊 handleGetReportAction - userId: ${userId}, actionData:`, actionData);
+
+      // Determine date range based on period
+      let startDate: string;
+      let endDate: string;
+      const today = new Date();
+      const todayStr = today.toISOString().split('T')[0];
+
+      switch (actionData.periodo) {
+        case 'hoje':
+        case 'today':
+        case 'diario':
+        case 'daily':
+          startDate = todayStr;
+          endDate = todayStr;
+          break;
+        case 'semanal':
+        case 'week':
+        case 'semana':
+          const weekAgo = new Date(today);
+          weekAgo.setDate(weekAgo.getDate() - 7);
+          startDate = weekAgo.toISOString().split('T')[0];
+          endDate = todayStr;
+          break;
+        case 'mensal':
+        case 'month':
+        case 'mes':
+          const monthAgo = new Date(today);
+          monthAgo.setMonth(monthAgo.getMonth() - 1);
+          startDate = monthAgo.toISOString().split('T')[0];
+          endDate = todayStr;
+          break;
+        case 'ano_atual':
+        case 'year':
+        case 'ano':
+          const yearStart = new Date(today.getFullYear(), 0, 1);
+          startDate = yearStart.toISOString().split('T')[0];
+          endDate = todayStr;
+          break;
+        default:
+          startDate = todayStr;
+          endDate = todayStr;
+      }
+
+      const payload = {
+        userId,
+        startDate,
+        endDate,
+        ...(actionData.filtro_categoria && actionData.filtro_categoria !== 'todos' && { categories: [actionData.filtro_categoria] })
+      };
+
+      console.log(`📊 Request payload:`, payload);
+
+      // Fetch transactions from note-guard-ms using detailed endpoint
+      const response = await axios.post(`${NOTE_GUARD_MS_URL}/api/transactions/detailed`, payload, {
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      if (response.data?.success && response.data?.data) {
+        const transactions = response.data.data;
+        const totalDebit = transactions
+          .filter((t: any) => t.type === 'debit')
+          .reduce((sum: number, t: any) => sum + parseFloat(t.amount), 0);
+        const totalCredit = transactions
+          .filter((t: any) => t.type === 'credit')
+          .reduce((sum: number, t: any) => sum + parseFloat(t.amount), 0);
+
+        let reportMessage = `📊 **Relatório de ${actionData.periodo || 'hoje'}**\n\n`;
+
+        if (transactions.length === 0) {
+          reportMessage += `Nenhuma transação encontrada neste período.`;
+        } else {
+          reportMessage += `💰 Total despesas: R$ ${totalDebit.toFixed(2)}\n`;
+          reportMessage += `💵 Total receitas: R$ ${totalCredit.toFixed(2)}\n`;
+          reportMessage += `📈 Saldo: R$ ${(totalCredit - totalDebit).toFixed(2)}\n\n`;
+          reportMessage += `📝 **Transações (${transactions.length}):**\n\n`;
+
+          transactions.forEach((t: any, index: number) => {
+            const emoji = t.type === 'credit' ? '💵' : '💰';
+            reportMessage += `${index + 1}. ${emoji} ${t.description || 'Sem descrição'}\n`;
+            reportMessage += `   Valor: R$ ${parseFloat(t.amount).toFixed(2)}\n`;
+            reportMessage += `   Categoria: ${t.category || 'Sem categoria'}\n`;
+            reportMessage += `   Data: ${t.date}\n\n`;
+          });
+        }
+
+        await axios.post(`${WHATSAPP_ADP_URL}/api/whatsapp/send`,
+          { phoneNumber, message: reportMessage },
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+        console.log(`✅ Sent report to ${phoneNumber}`);
+      } else {
+        await axios.post(`${WHATSAPP_ADP_URL}/api/whatsapp/send`,
+          { phoneNumber, message: '❌ Não foi possível buscar suas transações. Tente novamente mais tarde.' },
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+        console.log(`❌ Failed to fetch transactions for ${phoneNumber}`);
+      }
+    } catch (error) {
+      console.error('Error handling get_report action:', error);
+      await axios.post(`${WHATSAPP_ADP_URL}/api/whatsapp/send`,
+        { phoneNumber, message: '❌ Erro ao buscar relatório. Tente novamente mais tarde.' },
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+    }
   }
 }
