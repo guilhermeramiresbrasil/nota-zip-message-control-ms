@@ -280,9 +280,15 @@ export class RabbitMQConsumer {
       const approvalKey = `${link.userId}_${data.messageId}`;
       const pendingApproval = this.pendingApprovals.get(approvalKey);
 
+      console.log(`🔍 Checking approval for key: ${approvalKey}`);
+      console.log(`🔍 Pending approval found: ${!!pendingApproval}`);
+      console.log(`🔍 Text content: "${textContent}"`);
+
       if (pendingApproval) {
         const isApproved = textContent === 'sim' || textContent === 'ok' || textContent === 'confirmar' || textContent === 'yes';
         const isRejected = textContent === 'não' || textContent === 'nao' || textContent === 'cancelar' || textContent === 'no';
+
+        console.log(`🔍 Approval check - isApproved: ${isApproved}, isRejected: ${isRejected}`);
 
         if (isApproved || isRejected) {
           this.pendingApprovals.delete(approvalKey);
