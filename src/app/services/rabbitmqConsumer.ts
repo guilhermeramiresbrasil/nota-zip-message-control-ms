@@ -115,12 +115,20 @@ export class RabbitMQConsumer {
 
         // Send confirmation request to user
         const actionData = createExpenseAction.data;
+        const PAYMENT_LABELS: Record<string, string> = {
+          pix: 'Pix', credit_card: 'Cartão de crédito', debit_card: 'Débito',
+          boleto: 'Boleto', cash: 'Dinheiro', vr_va: 'VR/VA', prepaid_debit: 'Pré-pago',
+        };
+        const paymentLine = actionData.forma_pagamento
+          ? `💳 Pagamento: ${PAYMENT_LABELS[actionData.forma_pagamento] || actionData.forma_pagamento}\n`
+          : '';
         const confirmationMessage = `🤖 Detectei uma transação:\n\n` +
           `💰 Valor: R$ ${actionData.valor}\n` +
           `📁 Categoria: ${actionData.categoria}\n` +
           `📝 Descrição: ${actionData.descricao}\n` +
-          `📅 Data: ${actionData.data_ocorrencia}\n\n` +
-          `Deseja confirmar? Responda "sim" ou "não".`;
+          `📅 Data: ${actionData.data_ocorrencia}\n` +
+          paymentLine +
+          `\nDeseja confirmar? Responda "sim" ou "não".`;
 
         await axios.post(`${WHATSAPP_ADP_URL}/api/whatsapp/send`,
           { phoneNumber: sendTo, message: confirmationMessage },
