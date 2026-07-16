@@ -1,15 +1,22 @@
 import axios from 'axios';
 
 export class ocrService {
-  private readonly ocrApiUrl: string;
+  private readonly llmAdpUrl: string;
 
   constructor() {
-    this.ocrApiUrl = process.env.OCR_API_URL || 'http://localhost:3008';
+    this.llmAdpUrl = process.env.LLM_ADP_URL || 'http://debr-llm-adp:3010';
   }
 
   async processImage(ocrRequest: any): Promise<void> {
     try {
-      await axios.post(`${this.ocrApiUrl}/api/ocr/process`, ocrRequest, {
+      // Send image to LLM-ADP for vision analysis
+      await axios.post(`${this.llmAdpUrl}/api/llm/analyze`, {
+        text: ocrRequest.text || '',
+        mediaBase64: ocrRequest.mediaBase64,
+        mimeType: ocrRequest.mimeType,
+        messageId: ocrRequest.messageId,
+        userId: ocrRequest.userId,
+      }, {
         headers: {
           'Content-Type': 'application/json',
           'X-Source-Service': 'message-control-ms'
@@ -17,9 +24,9 @@ export class ocrService {
         timeout: 10000
       });
 
-      console.log(`📤 Imagem enviada para OCR-ADP: ${ocrRequest.messageId}`);
+      console.log(`📤 Imagem enviada para LLM-ADP (vision): ${ocrRequest.messageId}`);
     } catch (error) {
-      console.error('⚠️ Erro ao enviar imagem para OCR-ADP:', error instanceof Error ? error.message : String(error));
+      console.error('⚠️ Erro ao enviar imagem para LLM-ADP:', error instanceof Error ? error.message : String(error));
       throw error;
     }
   }
