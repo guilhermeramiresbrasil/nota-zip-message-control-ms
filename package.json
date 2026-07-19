@@ -1,7 +1,7 @@
 {
   "name": "message-control-ms",
   "version": "1.0.0",
-  "description": "Message Control MS - Microserviço de controle de mensagens com banco de dados",
+  "description": "Message Control MS - Microservi\u00e7o de controle de mensagens com banco de dados",
   "main": "src/index.ts",
   "scripts": {
     "dev": "bun --watch src/index.ts",
