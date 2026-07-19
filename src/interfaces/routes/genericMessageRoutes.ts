@@ -3,13 +3,17 @@ import { GenericMessage, genericMessageSchema } from '../../interfaces/schemas/g
 import { GenericProcessMessageOperation } from '../../app/operations/genericProcessMessageOperation';
 import { GenericChannelService } from '../../app/services/genericChannelService';
 import { GenericUserLinkRepository } from '../../app/repositories/genericUserLinkRepository';
+import { LocalWhatsAppAdapter } from '../../app/adapters/localWhatsAppAdapter';
 
 export function genericMessageRoutes() {
   const channelService = new GenericChannelService();
   const userLinkRepository = new GenericUserLinkRepository();
+
+  channelService.registerAdapter('whatsapp', new LocalWhatsAppAdapter());
+
   const processMessageOperation = new GenericProcessMessageOperation(channelService, userLinkRepository);
 
-  return new Elysia({ prefix: '/api/messages' })
+  return new Elysia({ prefix: '/api/channels' })
     // Generic webhook endpoint for all channels
     .post('/webhook', async ({ body }) => {
       try {

@@ -1,6 +1,9 @@
+import axios from 'axios';
 import { GenericMessage, GenericResponse, LLMResponse } from '../../interfaces/schemas/genericMessageSchema';
 import { GenericChannelService } from '../services/genericChannelService';
 import { GenericUserLinkRepository } from '../repositories/genericUserLinkRepository';
+
+const NOTE_GUARD_MS_URL = process.env.NOTE_GUARD_MS_URL || 'http://debr-note-guard-ms:3011';
 
 export class GenericProcessMessageOperation {
   private channelService: GenericChannelService;
@@ -28,10 +31,13 @@ export class GenericProcessMessageOperation {
         return this.createErrorResponse(message, 'User not linked or inactive');
       }
 
-      // 2. Prepare message for LLM
-      const llmRequest = this.prepareLLMRequest(message);
+      // 2. Fetch active credit cards for user context
+      const activeCards = await this.fetchActiveCards(userLink.userId);
 
-      // 3. Send to LLM-ADP
+      // 3. Prepare message for LLM
+      const llmRequest = this.prepareLLMRequest(message, userLink.userId, activeCards);
+
+      // 4. Send to LLM-ADP
       const llmResponse = await this.sendToLLM(llmRequest);
 
       // 4. Process LLM response
@@ -74,9 +80,33 @@ export class GenericProcessMessageOperation {
   }
 
   /**
+   * Fetch active credit cards from note-guard-ms
+   */
+  private async fetchActiveCards(userId: string): Promise<Array<{ id: string; name: string; type: string }>> {
+    try {
+      const response = await axios.get(`${NOTE_GUARD_MS_URL}/api/credit-cards/active`, {
+        params: { userId },
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      if (response.data?.success && Array.isArray(response.data.data)) {
+        return response.data.data.map((card: any) => ({
+          id: card.id,
+          name: card.name,
+          type: card.type,
+        }));
+      }
+      return [];
+    } catch (error) {
+      console.error(`❌ Failed to fetch active cards for user ${userId}:`, error instanceof Error ? error.message : String(error));
+      return [];
+    }
+  }
+
+  /**
    * Prepare message for LLM
    */
-  private prepareLLMRequest(message: GenericMessage): any {
+  private prepareLLMRequest(message: GenericMessage, userId: string, cards: Array<{ id: string; name: string; type: string }>): any {
     const text = message.content.text || '';
     const media = message.content.media || [];
 
@@ -89,6 +119,11 @@ export class GenericProcessMessageOperation {
       text,
       mediaBase64,
       mimeType,
+      context: {
+        userId,
+        conversationId: userId,
+        cards,
+      },
     };
   }
 

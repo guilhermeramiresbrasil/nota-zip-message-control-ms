@@ -1,6 +1,7 @@
 import { Elysia } from 'elysia';
 import { initLogger } from './infra/logging/loggerClient';
 import { messageRoutes } from './interfaces/routes/messageRoutes';
+import { genericMessageRoutes } from './interfaces/routes/genericMessageRoutes';
 import { initializeDatabase, closeDatabase } from './infra/db';
 import { RabbitMQService } from './app/services/rabbitmqService';
 import { RabbitMQConsumer } from './app/services/rabbitmqConsumer';
@@ -22,6 +23,7 @@ async function startServer() {
 
   const app = new Elysia()
     .use(messageRoutes())
+    .use(genericMessageRoutes())
     .listen(3007);
 
   logger.success('Message Control MS running on 0.0.0.0:3007');

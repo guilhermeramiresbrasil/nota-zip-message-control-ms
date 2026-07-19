@@ -8,6 +8,7 @@ import { messageRepository } from '../../infra/repositories/messageRepository';
 const WHATSAPP_ADP_URL = process.env.WHATSAPP_API_URL || 'http://whatsapp-adp:3006';
 const AUTH_MS_URL = process.env.AUTH_MS_URL || 'http://auth-ms:3004';
 const USER_MS_URL = process.env.USER_MS_URL || 'http://user-ms:3002';
+const NOTE_GUARD_MS_URL = process.env.NOTE_GUARD_MS_URL || 'http://debr-note-guard-ms:3011';
 
 const PLAN_LIMITS: Record<string, number> = {
   free: 12,
@@ -307,7 +308,7 @@ export class RabbitMQConsumer {
 
         console.log(`🔍 Approval check - isApproved: ${isApproved}, isRejected: ${isRejected}`);
 
-        if (isApproved || isRejected) {
+        if ((isApproved || isRejected) && approvalKey) {
           this.pendingApprovals.delete(approvalKey);
 
           if (isApproved) {
@@ -347,6 +348,8 @@ export class RabbitMQConsumer {
         timestamp: new Date(data.timestamp),
       });
 
+      const activeCards = await this.fetchActiveCards(link.userId);
+
       const llmPayload: Record<string, unknown> = {
         type: 'llm_request',
         messageId: data.messageId,
@@ -364,11 +367,38 @@ export class RabbitMQConsumer {
         llmPayload.text = `Mensagem do tipo ${data.messageType} recebida.`;
       }
 
+      llmPayload.context = {
+        userId: link.userId,
+        conversationId: link.userId,
+        cards: activeCards,
+      };
+
       await this.rabbitMQ.publish('message.processing', 'llm.process', llmPayload);
       console.log(`Processed incoming message from ${phoneJid} (userId: ${link.userId})`);
     } catch (error) {
       console.error('Error handling incoming message:', error);
       throw error;
+    }
+  }
+
+  private async fetchActiveCards(userId: string): Promise<Array<{ id: string; name: string; type: string }>> {
+    try {
+      const response = await axios.get(`${NOTE_GUARD_MS_URL}/api/credit-cards/active`, {
+        params: { userId },
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      if (response.data?.success && Array.isArray(response.data.data)) {
+        return response.data.data.map((card: any) => ({
+          id: card.id,
+          name: card.name,
+          type: card.type,
+        }));
+      }
+      return [];
+    } catch (error) {
+      console.error(`❌ Failed to fetch active cards for user ${userId}:`, error instanceof Error ? error.message : String(error));
+      return [];
     }
   }
 

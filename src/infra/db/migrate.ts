@@ -12,6 +12,6 @@ async function runMigrations() {
   }
 }
 
-if (import.meta.main) {
+if ((import.meta as any).main) {
   runMigrations();
 }
