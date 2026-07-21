@@ -116,25 +116,7 @@ export class RabbitMQConsumer {
 
         // Send confirmation request to user
         const actionData = createExpenseAction.data;
-        const PAYMENT_LABELS: Record<string, string> = {
-          pix: 'Pix', credit_card: 'Cartão de crédito', debit_card: 'Débito',
-          boleto: 'Boleto', cash: 'Dinheiro', vr_va: 'VR/VA', prepaid_debit: 'Pré-pago',
-        };
-        const paymentLine = actionData.forma_pagamento
-          ? `💳 Pagamento: ${PAYMENT_LABELS[actionData.forma_pagamento] || actionData.forma_pagamento}\n`
-          : '';
-        const confirmationMessage = `🤖 Detectei uma transação:\n\n` +
-          `💰 Valor: R$ ${actionData.valor}\n` +
-          `📁 Categoria: ${actionData.categoria}\n` +
-          `📝 Descrição: ${actionData.descricao}\n` +
-          `📅 Data: ${actionData.data_ocorrencia}\n` +
-          paymentLine +
-          `\nDeseja confirmar? Responda "sim" ou "não".`;
-
-        await axios.post(`${WHATSAPP_ADP_URL}/api/whatsapp/send`,
-          { phoneNumber: sendTo, message: confirmationMessage },
-          { headers: { 'Content-Type': 'application/json' } }
-        );
+        await this.sendConfirmationRequest(sendTo, actionData);
         console.log(`✅ Sent approval request to ${sendTo}`);
 
         // Set timeout for approval (5 minutes)
@@ -222,7 +204,10 @@ export class RabbitMQConsumer {
     }
 
     try {
-      const textContent = data.messageType === 'text' ? data.content.trim().toLowerCase() : '';
+      const rawContent = (data.messageType === 'text' || data.messageType === 'interactive')
+        ? data.content.replace(/^(BUTTON|LIST):/i, '').trim().toLowerCase()
+        : '';
+      const textContent = rawContent;
       const isVerificationCode = VERIFICATION_CODE_REGEX.test(textContent);
 
       if (isVerificationCode) {
@@ -303,10 +288,32 @@ export class RabbitMQConsumer {
       console.log(`🔍 Text content: "${textContent}"`);
 
       if (pendingApproval) {
-        const isApproved = textContent === 'sim' || textContent === 'ok' || textContent === 'confirmar' || textContent === 'yes';
-        const isRejected = textContent === 'não' || textContent === 'nao' || textContent === 'cancelar' || textContent === 'no';
+        // If user replies with audio/image, ask them to confirm by text
+        if (data.messageType !== 'text' && data.messageType !== 'interactive') {
+          await this.sendWhatsApp(pendingApproval.phoneNumber,
+            'Você tem uma confirmação pendente. Para confirmar responda *sim*, para cancelar responda *não*. Para correções, envie o ajuste por texto (ex: *o valor é 200*).'
+          );
+          console.log(`⚠️ Non-text approval response from ${phoneJid}, asked for text confirmation`);
+          return;
+        }
+
+        const isApproved = textContent.startsWith('sim') || textContent === 'ok' || textContent === 'confirmar' || textContent === 'yes';
+        const isRejected = textContent.startsWith('não') || textContent.startsWith('nao') || textContent === 'cancelar' || textContent === 'no';
 
         console.log(`🔍 Approval check - isApproved: ${isApproved}, isRejected: ${isRejected}`);
+
+        // If user is trying to correct the pending transaction, parse and update it
+        if (!isApproved && !isRejected && approvalKey) {
+          const correction = this.parseCorrection(textContent);
+          if (correction && Object.keys(correction).length > 0) {
+            pendingApproval.actionData = { ...pendingApproval.actionData, ...correction };
+            this.pendingApprovals.set(approvalKey, pendingApproval);
+            await this.sendWhatsApp(pendingApproval.phoneNumber, '✏️ Correção aplicada. Confira os dados atualizados:');
+            await this.sendConfirmationRequest(pendingApproval.phoneNumber, pendingApproval.actionData);
+            console.log(`✏️ Correction applied for ${approvalKey}:`, correction);
+            return;
+          }
+        }
 
         if ((isApproved || isRejected) && approvalKey) {
           this.pendingApprovals.delete(approvalKey);
@@ -340,6 +347,13 @@ export class RabbitMQConsumer {
           });
           return;
         }
+
+        // Text response but didn't understand, ask again
+        await this.sendWhatsApp(pendingApproval.phoneNumber,
+          'Não entendi. Confirme a transação respondendo *sim* ou cancele respondendo *não*.'
+        );
+        console.log(`⚠️ Unclear approval response from ${phoneJid}: "${textContent}"`);
+        return;
       }
 
       await this.redisCache.saveMessage(link.userId, {
@@ -361,8 +375,14 @@ export class RabbitMQConsumer {
       if (data.messageType === 'text') {
         llmPayload.text = data.content;
       } else if (data.messageType === 'image' || data.messageType === 'audio') {
-        llmPayload.mediaBase64 = (data.metadata as any)?.mediaBase64 || data.content;
-        llmPayload.mimeType = (data.metadata as any)?.mimeType || (data.messageType === 'audio' ? 'audio/ogg' : 'image/jpeg');
+        const mediaBase64 = (data.metadata as any)?.mediaBase64;
+        const mediaMimeType = (data.metadata as any)?.mimeType;
+        if (mediaBase64) {
+          llmPayload.mediaBase64 = mediaBase64;
+          llmPayload.mimeType = mediaMimeType || (data.messageType === 'audio' ? 'audio/ogg' : 'image/jpeg');
+        } else {
+          llmPayload.text = `Recebi um ${data.messageType === 'audio' ? 'áudio' : 'imagem'}, mas não consegui processar o arquivo. Tente enviar novamente ou envie por texto.`;
+        }
       } else {
         llmPayload.text = `Mensagem do tipo ${data.messageType} recebida.`;
       }
@@ -538,5 +558,81 @@ export class RabbitMQConsumer {
         { headers: { 'Content-Type': 'application/json' } }
       );
     }
+  }
+
+  private async sendConfirmationRequest(phoneNumber: string, actionData: any): Promise<void> {
+    const PAYMENT_LABELS: Record<string, string> = {
+      pix: 'Pix', credit_card: 'Cartão de crédito', debit_card: 'Débito',
+      boleto: 'Boleto', cash: 'Dinheiro', vr_va: 'VR/VA', prepaid_debit: 'Pré-pago',
+    };
+    const paymentLine = actionData.forma_pagamento
+      ? `💳 Pagamento: ${PAYMENT_LABELS[actionData.forma_pagamento] || actionData.forma_pagamento}\n`
+      : '';
+    const confirmationMessage = `🤖 Detectei uma transação:\n\n` +
+      `💰 Valor: R$ ${actionData.valor}\n` +
+      `📁 Categoria: ${actionData.categoria}\n` +
+      `📝 Descrição: ${actionData.descricao}\n` +
+      `📅 Data: ${actionData.data_ocorrencia}\n` +
+      paymentLine +
+      `\nDeseja confirmar? Responda *sim* ou *não*.`;
+
+    await axios.post(`${WHATSAPP_ADP_URL}/api/whatsapp/send`,
+      { phoneNumber, message: confirmationMessage },
+      { headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
+  private parseCorrection(text: string): Record<string, string | number> | null {
+    const result: Record<string, string | number> = {};
+
+    // Extract number for value correction when user says "é 200", "valor é 200", "fica 200", etc.
+    const valueContextPattern = /(valor|custa|preço|corrig|mud|troc|errado|fica|ficou|deveria ser|ser\s+\w+\s+de)\b.*?([\d]+[,.]?[\d]*)/;
+    const simpleValuePattern = /\b(é|e|fica|ficou|para|pra|de|corrigir)\s+([\d]+[,.]?[\d]*)(\s*reais?)?/i;
+    const valueMatch = text.match(valueContextPattern) || text.match(simpleValuePattern);
+    if (valueMatch) {
+      const value = parseFloat(valueMatch[2].replace(',', '.'));
+      if (!isNaN(value)) {
+        result.valor = value;
+      }
+    }
+
+    // Extract category
+    const categoryMatch = text.match(/(?:categoria\s*(é|e|eh|esta|é\s+pra\s+ser|fica))\s+([a-zà-ú\s]+)/i);
+    if (categoryMatch) {
+      result.categoria = categoryMatch[2].trim();
+    }
+
+    // Extract description
+    const descMatch = text.match(/(?:descri(?:ç|c)ão\s*(é|e|eh|esta|é\s+pra\s+ser|fica))\s+([a-zà-ú0-9\s]+)/i);
+    if (descMatch) {
+      result.descricao = descMatch[2].trim();
+    }
+
+    // Extract date (DD/MM/YYYY, DD/MM, hoje, ontem, anteontem)
+    const dateMatch = text.match(/(?:data\s*(é|e|eh|esta|é\s+pra\s+ser|fica))\s+([\d]{1,2}\/[\d]{1,2}(?:\/[\d]{4})?|hoje|ontem|anteontem)/i);
+    if (dateMatch) {
+      result.data_ocorrencia = dateMatch[2].trim();
+    }
+
+    // Extract payment method
+    const paymentKeywords: Record<string, string[]> = {
+      pix: ['pix'],
+      credit_card: ['cartão de crédito', 'cartao de credito', 'crédito', 'credito', 'cartão crédito'],
+      debit_card: ['cartão de débito', 'cartao de debito', 'débito', 'debito', 'cartão débito'],
+      boleto: ['boleto'],
+      cash: ['dinheiro', 'espécie', 'especie'],
+      vr_va: ['vr', 'va', 'vale refeição', 'vale alimentação'],
+      prepaid_debit: ['pré-pago', 'pre-pago'],
+    };
+    if (/(pagamento|forma de pagamento|paguei|pago)\b/i.test(text)) {
+      for (const [key, keywords] of Object.entries(paymentKeywords)) {
+        if (keywords.some(k => text.includes(k))) {
+          result.forma_pagamento = key;
+          break;
+        }
+      }
+    }
+
+    return Object.keys(result).length > 0 ? result : null;
   }
 }
